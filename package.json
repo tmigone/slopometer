@@ -1,0 +1,31 @@
+{
+  "name": "slopometer",
+  "version": "1.0.0",
+  "description": "Is that text AI slop? Ask the Slopometer.",
+  "type": "module",
+  "scripts": {
+    "dev": "astro dev",
+    "build": "astro build",
+    "preview": "astro preview"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tmigone/slopometer.git"
+  },
+  "author": "Tomás Migone <tomasmigone@gmail.com>",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/tmigone/slopometer/issues"
+  },
+  "homepage": "https://github.com/tmigone/slopometer#readme",
+  "dependencies": {
+    "@astrojs/node": "^11.1.6",
+    "@typesafe-ai/sdk": "^0.6.0",
+    "astro": "^7.3.3"
+  },
+  "devDependencies": {
+    "@astrojs/check": "^0.9.10",
+    "@types/node": "^26.6.1",
+    "typescript": "^6.0.3"
+  }
+}

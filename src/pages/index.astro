@@ -1,0 +1,630 @@
+---
+const SIGNALS = [
+  { key: 'hedging', label: 'Endless hedging', polarity: 'bad' },
+  { key: 'filler', label: 'Padding and filler', polarity: 'bad' },
+  { key: 'cliches', label: 'Assistant clichés', polarity: 'bad' },
+  { key: 'specifics', label: 'Actually says something', polarity: 'good' },
+];
+---
+
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Slopometer</title>
+    <meta name="description" content="Paste some text. Find out if it is AI slop." />
+  </head>
+  <body>
+    <main>
+      <header>
+        <h1>Slopometer</h1>
+        <p class="tagline">Paste some text. Find out if it's AI slop.</p>
+      </header>
+
+      <form id="form">
+        <div class="panes">
+          <textarea
+            id="text"
+            name="text"
+            placeholder="Paste the suspicious text here…"
+            required></textarea>
+
+          <section id="result" class="result" data-state="empty" aria-live="polite">
+          <p class="placeholder" data-when="empty">Results will appear here.</p>
+          <p class="placeholder" data-when="loading">Asking JEV…</p>
+          <p class="error" data-when="error" id="error-msg"></p>
+
+          <div class="report" data-when="done">
+            <p class="headline" id="headline"></p>
+
+            <div class="gauge">
+              <div class="score"><strong id="score-num">0</strong><span class="pct">%</span></div>
+              <div class="meter">
+                <div class="meter-track"><span class="meter-marker" id="meter-marker"></span></div>
+                <div class="meter-ends"><span>human</span><span>slop</span></div>
+              </div>
+            </div>
+
+            <p class="rubric" id="rubric"></p>
+
+            <ul class="signals">
+              {
+                SIGNALS.map((signal) => (
+                  <li data-polarity={signal.polarity}>
+                    <span class="signal-label">{signal.label}</span>
+                    <span class="bar"><span id={`bar-${signal.key}`} /></span>
+                    <span class="signal-value" id={`val-${signal.key}`}>–</span>
+                  </li>
+                ))
+              }
+            </ul>
+
+            <p class="confidence" id="confidence"></p>
+          </div>
+        </section>
+        </div>
+
+        <div class="actions" role="group">
+          <div class="examples">
+            <span class="muted">Try:</span>
+            <button type="button" class="chip" data-example="slop">slop</button>
+            <button type="button" class="chip" data-example="human">human</button>
+          </div>
+          <button id="submit" type="submit">Measure<span class="kbd">⌘↵</span></button>
+        </div>
+      </form>
+    </main>
+
+    <script>
+      const EXAMPLES: Record<string, string> = {
+        slop: `In today's fast-paced world, it is important to note that artificial intelligence represents a transformative tapestry of opportunity. By leveraging cutting-edge synergies, organizations can unlock unprecedented value across the entire ecosystem. Whether you are a seasoned professional or just beginning your journey, delving into this space can be both exciting and rewarding. Ultimately, the key takeaway is that embracing innovation while remaining mindful of challenges will pave the way for a brighter tomorrow.`,
+        human: `ok so the pipe froze again last tuesday, second time this month. Dad says its the joint under the kitchen, the one he patched in 09 with that epoxy stuff from the hardware store on Rivadavia that closed down. I told him we should just replace the whole run but he wont hear it. 40 bucks of epoxy versus 600 for a plumber, thats his whole argument. Anyway I put a bucket under it and now the cat drinks out of the bucket.`,
+      };
+
+      const SIGNAL_KEYS = ['hedging', 'filler', 'cliches', 'specifics'] as const;
+
+      const form = document.getElementById('form') as HTMLFormElement;
+      const textarea = document.getElementById('text') as HTMLTextAreaElement;
+      const button = document.getElementById('submit') as HTMLButtonElement;
+      const result = document.getElementById('result') as HTMLElement;
+
+      type Signal = { key: string; value: number };
+      type Verdict = { slop: number; confidence: number; verdict: string; signals: Signal[] };
+
+      // Cmd/Ctrl+Enter submits without reaching for the button.
+      textarea.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) form.requestSubmit();
+      });
+
+      for (const chip of document.querySelectorAll<HTMLButtonElement>('[data-example]')) {
+        chip.addEventListener('click', () => {
+          textarea.value = EXAMPLES[chip.dataset.example!];
+          form.requestSubmit();
+        });
+      }
+
+      form.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        button.disabled = true;
+        setState('loading');
+
+        try {
+          const response = await fetch('/api/check', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ text: textarea.value }),
+          });
+          const data = await response.json();
+          if (!response.ok) throw new Error(data.error ?? 'Something went wrong.');
+          render(data as Verdict);
+        } catch (error) {
+          text('error-msg', (error as Error).message);
+          setState('error');
+        } finally {
+          button.disabled = false;
+        }
+      });
+
+      function render(data: Verdict) {
+        const report = result.querySelector('.report') as HTMLElement;
+        report.dataset.level = level(data.slop);
+
+        text('headline', headline(data.slop));
+        text('rubric', data.verdict);
+        text('confidence', `Confidence ${Math.round(data.confidence * 100)}%`);
+
+        const marker = document.getElementById('meter-marker') as HTMLElement;
+        marker.style.left = `${data.slop}%`;
+
+        countUp(document.getElementById('score-num') as HTMLElement, data.slop);
+
+        const byKey = new Map(data.signals.map((signal) => [signal.key, signal.value]));
+        for (const key of SIGNAL_KEYS) {
+          const value = byKey.get(key) ?? 0;
+          const bar = document.getElementById(`bar-${key}`) as HTMLElement;
+          bar.style.width = `${Math.round(value * 100)}%`;
+          text(`val-${key}`, `${Math.round(value * 100)}%`);
+        }
+
+        setState('done');
+        revealResult();
+      }
+
+      // Stacked layout puts the result below the fold; bring it up.
+      function revealResult() {
+        if (matchMedia('(min-width: 860px)').matches) return;
+        result.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      }
+
+      // Short roll-up so the number reads as a measurement, not a page load.
+      function countUp(el: HTMLElement, target: number) {
+        if (matchMedia('(prefers-reduced-motion: reduce)').matches) {
+          el.textContent = String(target);
+          return;
+        }
+        const start = performance.now();
+        const step = (now: number) => {
+          const t = Math.min((now - start) / 500, 1);
+          el.textContent = String(Math.round(target * (1 - Math.pow(1 - t, 3))));
+          if (t < 1) requestAnimationFrame(step);
+        };
+        requestAnimationFrame(step);
+      }
+
+      function level(slop: number) {
+        if (slop < 35) return 'low';
+        if (slop < 65) return 'mid';
+        return 'high';
+      }
+
+      function headline(slop: number) {
+        if (slop < 20) return 'A human wrote this.';
+        if (slop < 35) return 'Reads human.';
+        if (slop < 50) return 'Could go either way.';
+        if (slop < 65) return 'Suspiciously smooth.';
+        if (slop < 80) return 'That is slop.';
+        return 'Industrial-grade slop.';
+      }
+
+      function text(id: string, value: string) {
+        (document.getElementById(id) as HTMLElement).textContent = value;
+      }
+
+      function setState(state: string) {
+        result.dataset.state = state;
+      }
+    </script>
+
+    <style>
+      :root {
+        color-scheme: light dark;
+        --bg: #fbfaf8;
+        --panel: #ffffff;
+        --fg: #1c1a17;
+        --muted: #7a746c;
+        --line: #e4e0d9;
+        --accent: #b8502a;
+        --low: #2f8f5b;
+        --mid: #bb8312;
+        --high: #c2451f;
+        --shadow: 0 1px 2px rgba(28, 26, 23, 0.04), 0 8px 24px -12px rgba(28, 26, 23, 0.16);
+      }
+
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #141309;
+          --panel: #1e1d14;
+          --fg: #f1ede5;
+          --muted: #9a9387;
+          --line: #322f26;
+          --accent: #e0855f;
+          --low: #57c78a;
+          --mid: #dcaa42;
+          --high: #ef7a52;
+          --shadow: none;
+        }
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--fg);
+        font: 16px/1.55 ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+        -webkit-font-smoothing: antialiased;
+      }
+
+      main {
+        min-height: 100dvh;
+        max-width: 60rem;
+        margin: 0 auto;
+        padding: 2rem 1.25rem;
+        display: grid;
+        align-content: start;
+        gap: 1.4rem;
+      }
+
+      header {
+        display: flex;
+        align-items: baseline;
+        flex-wrap: wrap;
+        gap: 0 0.75rem;
+      }
+
+      h1 {
+        margin: 0;
+        font-size: clamp(1.7rem, 4vw, 2.2rem);
+        letter-spacing: -0.035em;
+      }
+
+      .tagline {
+        margin: 0;
+        color: var(--muted);
+        font-size: 0.95rem;
+      }
+
+      /* Narrow screens: ordinary document flow, content sizes itself. */
+      .panes {
+        display: grid;
+        gap: 1rem;
+      }
+
+      form {
+        display: grid;
+        gap: 1.1rem;
+        min-height: 0;
+      }
+
+      textarea {
+        height: clamp(9rem, 28vh, 14rem);
+        min-height: 0;
+        width: 100%;
+        padding: 0.9rem 1rem;
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        background: var(--panel);
+        box-shadow: var(--shadow);
+        color: inherit;
+        font: inherit;
+        line-height: 1.6;
+        resize: none;
+      }
+
+      textarea::placeholder {
+        color: var(--muted);
+      }
+
+      textarea:focus-visible {
+        outline: 2px solid var(--accent);
+        outline-offset: 1px;
+      }
+
+      /* Empty right flank balances the chips so the button sits on the page centre line. */
+      .actions {
+        display: grid;
+        grid-template-columns: 1fr auto 1fr;
+        align-items: center;
+        gap: 0.75rem;
+      }
+
+      .examples {
+        display: flex;
+        align-items: center;
+        gap: 0.45rem;
+        justify-self: start;
+      }
+
+      @media (max-width: 540px) {
+        .actions {
+          grid-template-columns: 1fr;
+          justify-items: center;
+          gap: 0.6rem;
+        }
+
+        .examples {
+          justify-self: center;
+        }
+      }
+
+      .chip {
+        padding: 0.25rem 0.7rem;
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        background: none;
+        color: var(--muted);
+        font: inherit;
+        font-size: 0.8rem;
+        cursor: pointer;
+      }
+
+      .chip:hover {
+        border-color: var(--accent);
+        color: var(--accent);
+      }
+
+      button[type='submit'] {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.5rem;
+        padding: 0.5rem 1.1rem;
+        border: 0;
+        border-radius: 999px;
+        background: var(--accent);
+        color: #fff;
+        font: inherit;
+        font-weight: 600;
+        font-size: 0.95rem;
+        cursor: pointer;
+      }
+
+      button[type='submit']:disabled {
+        opacity: 0.5;
+        cursor: progress;
+      }
+
+      .kbd {
+        font-size: 0.75rem;
+        opacity: 0.7;
+      }
+
+      .result {
+        min-height: 0;
+        padding: 1.1rem 1.2rem;
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        background: var(--panel);
+        box-shadow: var(--shadow);
+      }
+
+      .result[data-state='empty'],
+      .result[data-state='loading'] {
+        display: grid;
+        place-items: center;
+        border-style: dashed;
+        background: none;
+        box-shadow: none;
+      }
+
+      /* One pane, four mutually exclusive states. */
+      .result [data-when] {
+        display: none;
+      }
+
+      .result[data-state='empty'] [data-when='empty'],
+      .result[data-state='loading'] [data-when='loading'],
+      .result[data-state='error'] [data-when='error'],
+      .result[data-state='done'] [data-when='done'] {
+        display: block;
+      }
+
+      .placeholder {
+        margin: 0;
+        color: var(--muted);
+        font-size: 0.9rem;
+      }
+
+      .result[data-state='loading'] .placeholder {
+        animation: pulse 1.1s ease-in-out infinite;
+      }
+
+      @keyframes pulse {
+        50% {
+          opacity: 0.35;
+        }
+      }
+
+      .error {
+        margin: 0;
+        color: var(--high);
+        font-size: 0.9rem;
+      }
+
+      .report {
+        --level: var(--high);
+      }
+
+      .report[data-level='low'] {
+        --level: var(--low);
+      }
+
+      .report[data-level='mid'] {
+        --level: var(--mid);
+      }
+
+      .headline {
+        margin: 0 0 0.75rem;
+        font-size: 1.15rem;
+        font-weight: 650;
+        letter-spacing: -0.015em;
+      }
+
+      .gauge {
+        display: flex;
+        align-items: center;
+        gap: 1rem;
+      }
+
+      .score {
+        display: flex;
+        align-items: baseline;
+        color: var(--level);
+        font-variant-numeric: tabular-nums;
+      }
+
+      .score strong {
+        font-size: clamp(2.5rem, 8vw, 3.4rem);
+        line-height: 0.95;
+        letter-spacing: -0.05em;
+      }
+
+      .pct {
+        font-size: 1.1rem;
+        font-weight: 650;
+        margin-left: 0.1rem;
+      }
+
+      .meter {
+        flex: 1;
+        min-width: 0;
+      }
+
+      .meter-track {
+        position: relative;
+        height: 8px;
+        border-radius: 999px;
+        background: linear-gradient(to right, var(--low), var(--mid), var(--high));
+        opacity: 0.85;
+      }
+
+      .meter-marker {
+        position: absolute;
+        top: 50%;
+        width: 14px;
+        height: 14px;
+        margin-left: -7px;
+        border-radius: 50%;
+        border: 2.5px solid var(--panel);
+        background: var(--fg);
+        transform: translateY(-50%);
+        transition: left 0.5s cubic-bezier(0.22, 1, 0.36, 1);
+        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+      }
+
+      .meter-ends {
+        display: flex;
+        justify-content: space-between;
+        margin-top: 0.35rem;
+        color: var(--muted);
+        font-size: 0.7rem;
+        text-transform: uppercase;
+        letter-spacing: 0.07em;
+      }
+
+      .rubric {
+        margin: 0.85rem 0 0;
+        color: var(--muted);
+        font-size: 0.85rem;
+        line-height: 1.45;
+      }
+
+      .signals {
+        list-style: none;
+        margin: 0.9rem 0 0;
+        padding: 0.9rem 0 0;
+        border-top: 1px solid var(--line);
+        display: grid;
+        gap: 0.5rem;
+      }
+
+      .signals li {
+        display: grid;
+        grid-template-columns: 1fr 5rem 2.4rem;
+        align-items: center;
+        gap: 0.7rem;
+        font-size: 0.82rem;
+      }
+
+      .signal-value {
+        color: var(--muted);
+        text-align: right;
+        font-variant-numeric: tabular-nums;
+      }
+
+      .bar {
+        height: 5px;
+        border-radius: 999px;
+        background: var(--line);
+        overflow: hidden;
+      }
+
+      .bar > span {
+        display: block;
+        width: 0;
+        height: 100%;
+        border-radius: 999px;
+        background: var(--high);
+        transition: width 0.5s cubic-bezier(0.22, 1, 0.36, 1);
+      }
+
+      .signals li[data-polarity='good'] .bar > span {
+        background: var(--low);
+      }
+
+      .confidence {
+        margin: 0.9rem 0 0;
+        color: var(--muted);
+        font-size: 0.78rem;
+      }
+
+      /* Wide screens: two equal-height panes, sized so the app fits one viewport.
+         Must come after the base textarea/result rules it overrides. */
+      @media (min-width: 860px) {
+        main {
+          align-content: center;
+        }
+
+        .panes {
+          --pane-h: clamp(17rem, 52vh, 24rem);
+          grid-template-columns: 1fr 1fr;
+          grid-auto-rows: var(--pane-h);
+        }
+
+        textarea {
+          height: 100%;
+        }
+
+        .result {
+          overflow-y: auto;
+        }
+      }
+
+      /* Non-fullscreen laptop windows: tighten the report so it still fits the pane. */
+      @media (min-width: 860px) and (max-height: 720px) {
+        main {
+          gap: 1rem;
+          padding-block: 1.25rem;
+        }
+
+        .score strong {
+          font-size: 2.6rem;
+        }
+
+        .headline {
+          margin-bottom: 0.5rem;
+        }
+
+        .rubric {
+          margin-top: 0.55rem;
+        }
+
+        .signals {
+          margin-top: 0.6rem;
+          padding-top: 0.6rem;
+          gap: 0.35rem;
+        }
+
+        .confidence {
+          margin-top: 0.55rem;
+        }
+      }
+
+      /* Very short viewports: fall back to flow rather than crush the panes. */
+      @media (max-height: 560px) {
+        main {
+          align-content: start;
+        }
+
+        .panes {
+          --pane-h: auto;
+        }
+
+        .result {
+          overflow-y: visible;
+        }
+      }
+    </style>
+  </body>
+</html>
